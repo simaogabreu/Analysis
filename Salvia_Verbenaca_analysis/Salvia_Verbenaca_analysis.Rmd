@@ -1,0 +1,363 @@
+---
+title: "Salvia Verbenaca analysis"
+output: 
+        html_document:
+          toc: true
+author: "Simão Abreu"
+date: "2020-12-10"
+---
+
+```{r setup,echo=FALSE}
+knitr::opts_chunk$set(cache = T,fig.align = "center",echo = F,cache.lazy = FALSE)
+```
+
+```{r libraryLoad,include=FALSE,cache = FALSE}
+hrm::hrmAttach()
+library(patchwork)
+library(ggthemes)
+library(DT)
+```
+
+
+
+```{r loadData,echo=FALSE}
+workflowData <- read_rds("verbenacareport.rds")
+binalysis <- workflowData %>%
+                        resultsProcessing()
+analysis <- workflowData %>%
+                        resultsAnalysis()
+assignment <- workflowData %>%
+      resultsAnnotation()
+```
+    
+## Overview
+      
+**Technique:** `metaboWorkflows` v0.8.5 workflow - FIE-HRMS fingerprinting
+
+**Undertaken:** Mon Dec  7 16:11:54 2020
+
+**Flags:** spectralBin, detectBatchDiff, detectMissInjections, preTreat, MFassignment, reduceIsotopes, modelling, correlations
+
+## Spectral Binning
+      
+### Overview
+      
+**Technique:** FIE-HRMS Spectral Binning
+
+```{r binalysisOverview,echo = FALSE}
+print(binalysis)
+```
+
+### Parameters
+
+```{r binParamters,echo=FALSE}
+binalysis@binParameters
+```
+
+
+### Results   
+
+The plots and tables below give an overview of the results of the spectral binning approach applied to this data set.
+
+
+
+```{r rawFeaturesTable,echo=FALSE}
+library(knitr)
+rawFeat <- binalysis %>%
+  binnedData() %>%
+  map(~{
+    d <- .
+    d %>%
+      rowid_to_column(var = 'Sample') %>%
+      gather('Feature','Intensity',-Sample)
+    }) %>%
+  bind_rows() %>%
+  mutate(Mode = str_sub(Feature,1,1)) %>%
+  group_by(Mode) %>%
+  summarise(`Number of bins` = n_distinct(Feature),`Missing Data (%)` = round(length(which(Intensity == 0))/length(Intensity) * 100,2))
+
+rawFeat$Mode[rawFeat$Mode == 'n'] = 'Negative'
+rawFeat$Mode[rawFeat$Mode == 'p'] = 'Positive'
+
+kable(rawFeat,caption = 'Table overview of spectral bins returned for each acqusition mode')
+```
+
+
+
+```{r chromatograms,warning = FALSE,echo=FALSE}
+binneR::plotChromatogram(binalysis)
+```
+
+
+
+```{r fingerprint,warning = FALSE,echo=FALSE}
+plotFingerprint(binalysis)
+```
+
+
+
+```{r PurityCentrality,echo=FALSE}
+histBins <- 30
+    
+purCent <- binalysis %>%
+  accurateData() %>%
+  dplyr::select(polarity,Purity,Centrality) %>%
+  gather('Measure','Value',-polarity) %>%
+  mutate(polarity = as.character(polarity)) %>%
+  na.omit()
+    
+purCent$polarity[purCent$polarity == 'n'] <- 'Negative'
+purCent$polarity[purCent$polarity == 'p'] <- 'Positive'
+    
+purPlot <- purCent %>%
+  filter(Measure == 'Purity') %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(fill = ptol_pal()(5)[2],colour = 'black',bins = histBins) +
+  theme_bw() +
+  facet_wrap(~polarity) +
+  ggtitle('Bin Purity Distribution') +
+  theme(plot.title = element_text(face = 'bold'),
+        axis.title = element_text(face = 'bold')) +
+  xlab('Purity Measure') +
+  ylab('Frequency')
+    
+centPlot <- purCent %>%
+filter(Measure == 'Centrality') %>%
+ggplot(aes(x = Value)) +
+  geom_histogram(fill = ptol_pal()(5)[2],colour = 'black',bins = histBins) +
+  theme_bw() +
+  facet_wrap(~polarity) +
+  ggtitle('Bin Centrality Distribution') +
+  theme(plot.title = element_text(face = 'bold'),
+        axis.title = element_text(face = 'bold')) +
+  xlab('Centrality Measure') +
+  ylab('Frequency')
+    
+purPlot + centPlot + plot_layout(ncol = 1)
+```
+
+
+
+```{r TICplot,echo=FALSE}
+binneR::plotTIC(binalysis, by = 'injOrder', colour = 'block')
+```   
+
+
+```{r RSDplot,echo=FALSE}
+metaboMisc::plotRSD(binalysis) %>%
+  walk(print)
+```   
+
+      
+## Analysis
+      
+### Overview
+      
+**Technique:** `metabolyseR` analysis
+
+```{r analysisOverview,echo = FALSE}
+print(analysis)
+```
+
+### Parameters
+
+```{r analysisParamters,echo=FALSE}
+analysis@parameters
+```
+    
+### Pre-treatment
+
+```{r unsupervisedPlots,echo = F,fig.width = 10}
+metabolyseR::plotPCA(analysis,cls = 'class',ellipses = TRUE,legend = TRUE) + plotUnsupervisedRF(analysis,cls = 'class',ellipses = TRUE,title = 'Multidimensional scaling (MDS) -
+unsupervised Random Forest',legend = TRUE)
+```
+      
+```{r LDAplot,echo = F,fig.width = 10}
+plotLDA(analysis,cls = 'class',ellipses = TRUE,legend = TRUE)
+```
+    
+```{r supervisedRFplots,echo = F,fig.width = 10}
+  plotSupervisedRF(analysis,cls = 'class',label = NULL,ellipses = TRUE,title = 'Multidimensional scaling (MDS) -
+supervised Random Forest',legend = TRUE,ROC = TRUE)
+```
+      
+```{r ptPurityCentrality,echo=FALSE}
+histBins <- 30
+
+preTreatedFeatures <- analysis %>%
+  preTreatedData() %>%
+  colnames()
+
+purCent <- binalysis %>%
+  accurateData() %>%
+  mutate(Feature = str_c(polarity,mz)) %>%
+  dplyr::select(polarity,Feature,Purity,Centrality) %>%
+  gather('Measure','Value',-polarity,-Feature) %>%
+  mutate(polarity = as.character(polarity)) %>%
+  na.omit() %>%
+  filter(Feature %in% preTreatedFeatures)
+  
+    
+purCent$polarity[purCent$polarity == 'n'] <- 'Negative'
+purCent$polarity[purCent$polarity == 'p'] <- 'Positive'
+    
+purPlot <- purCent %>%
+  filter(Measure == 'Purity') %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(fill = ptol_pal()(5)[2],colour = 'black',bins = histBins) +
+  theme_bw() +
+  facet_wrap(~polarity) +
+  ggtitle('Bin Purity Distribution') +
+  theme(plot.title = element_text(face = 'bold'),
+        axis.title = element_text(face = 'bold')) +
+  xlab('Purity Measure') +
+  ylab('Frequency')
+    
+centPlot <- purCent %>%
+filter(Measure == 'Centrality') %>%
+ggplot(aes(x = Value)) +
+  geom_histogram(fill = ptol_pal()(5)[2],colour = 'black',bins = histBins) +
+  theme_bw() +
+  facet_wrap(~polarity) +
+  ggtitle('Bin Centrality Distribution') +
+  theme(plot.title = element_text(face = 'bold'),
+        axis.title = element_text(face = 'bold')) +
+  xlab('Centrality Measure') +
+  ylab('Frequency')
+    
+purPlot + centPlot + plot_layout(ncol = 1)
+```
+
+
+### Modelling
+
+```{r modellingOverview, cache = FALSE,results = 'asis'}
+modellingRes <- analysis %>%
+  modellingResults()
+
+if (names(modellingRes)[1] == 'randomForest') {
+modellingRes %>%
+  .[[1]] %>%
+  map(measures) %>%
+  bind_rows() %>%
+  mutate_if(is.numeric,round,digits = 3) %>%
+  datatable(rownames = F,filter = 'top',caption = 'Table of model measures')
+}
+```
+
+```{r explanatoryFeatureOverview,cache = FALSE}
+threshold <- 0.05
+
+if (is.list(modellingRes %>% .[[1]])) {
+  explanFeat <- modellingRes %>%
+    .[[1]] %>%
+    map(explanatoryFeatures,threshold = threshold) %>%
+    bind_rows() 
+} else {
+  explanFeat <- modellingRes %>%
+    .[[1]] %>%
+    explanatoryFeatures(threshold = threshold)
+}
+
+explanFeat %>%
+  group_by(Response,Comparison) %>%
+  summarise(`# Explanatory` = n()) %>%
+  datatable(rownames = F,filter = 'top',caption = str_c('Overview of numbers of explanatory features (p < ',threshold,')'))
+```
+
+```{r explanatoryFeatures,cache = FALSE}
+ef <- explanFeat %>%
+  tbl_df() %>%
+  mutate_if(is.numeric,round,digits = 3)
+
+names(ef)[names(ef) == 'adjusted.p.value'] <- 'adjustedPvalue' 
+
+if ('adjustedPvalue' %in% names(ef)) {
+ ef <- ef  %>%
+    arrange(adjustedPvalue) 
+} else {
+  ef <- ef %>%
+    arrange(Value)
+}
+
+if (nrow(ef) > 10000) {
+  ef %>%
+    .[1:10000,] %>%
+    datatable(rownames = F,filter = 'top',caption = str_c('Table of top 10000 explanatory features (p < ',threshold,')'))
+} else {
+  ef %>%
+    datatable(rownames = F,filter = 'top',caption = str_c('Table of explanatory features (p < ',threshold,')'))
+}
+```
+
+```{r explanatoryHeatMap,fig.height = 10}
+if (nrow(ef) > 2) {
+  if (length(unique(ef$Feature)) > 150) {
+    featNames <- F
+  } else {
+    featNames <- T
+  }
+  
+  if (is.list(modellingRes[[1]])) {
+    mod <- modellingRes[[1]][[1]]
+  } else {
+    mod <- modellingRes[[1]] 
+  }
+  
+  plotExplanatoryHeatmap(mod,featureNames = featNames)
+}
+```
+
+### Correlations
+
+```{r correlationTable,echo = F,cache = F}
+cors <- analysis %>%
+  correlationResults()
+if (nrow(cors) > 10000) {
+  cors <- cors %>%
+    arrange(desc(r)) %>%
+    .[1:10000,]
+  caption <- 'Table of top 10000 feature correlations'
+} else {
+  caption <- 'Table of feature correlations'
+}
+datatable(cors %>%
+          mutate_if(is.numeric,round,digits = 3),
+          rownames = F,filter = 'top',caption = caption)
+```
+
+
+## Annotation
+      
+### Overview
+                      
+**Technique:** `MFassign` assignment
+
+```{r assignmentOverview,echo = FALSE}
+print(assignment)
+```
+
+### Parameters
+
+```{r assignmentParamters,echo=FALSE}
+assignment@parameters
+```
+
+### Assignments  
+
+```{r assignmentTable,echo = FALSE,cache = FALSE}
+datatable(assignment %>%
+  summariseAssignment(),
+          rownames = F,filter = "top",caption = "Summary table of molecular formula assignments")
+```
+
+
+## Session Info
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+    
+-----------
+Generated by [metaboReports](https://github.com/jasenfinch/metaboReports) v0.8.2
